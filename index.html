@@ -188,6 +188,11 @@
       <div class="ws-config">
         Enter your server address (e.g. <code>ws://192.168.1.x:3001</code> or your ngrok URL):
         <input type="text" id="wsUrlInput" placeholder="ws://localhost:3001" value="ws://localhost:3001" />
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="btn-sm" onclick="prefillLocal()">Use local IP</button>
+          <button class="btn-sm" onclick="testWsConnection()">Test connection</button>
+        </div>
+        <div id="wsWarning" style="margin-top:8px; font-size:12px; color:#a33; display:none;"></div>
       </div>
     </div>
 
@@ -301,13 +306,54 @@ let countdownId       = null;
 // ── WebSocket ──────────────────────────────────────────────────────────────
 let ws = null;
 
-function wsUrl() {
+function wsUrlRaw() {
   return (document.getElementById("wsUrlInput")?.value || "ws://localhost:3001").trim();
 }
 
+function validateAndNormalizeWsUrl(raw) {
+  if (!raw) throw new Error('Empty URL');
+  // allow ws:// or wss:// and also accept http(s) urls and convert
+  let url = raw.trim();
+  // If user pasted an https:// or http:// URL, try to map to wss/ws
+  if (url.startsWith('https://')) url = 'wss://' + url.slice(8);
+  else if (url.startsWith('http://')) url = 'ws://' + url.slice(7);
+
+  // If served over https and user provided ws://, warn and attempt to upgrade to wss://
+  const pageIsSecure = location.protocol === 'https:';
+  if (pageIsSecure && url.startsWith('ws://')) {
+    // Warn user and try to auto-convert to wss:// — this will only work if the server supports TLS.
+    const warningEl = document.getElementById('wsWarning');
+    if (warningEl) {
+      warningEl.style.display = 'block';
+      warningEl.textContent = 'This page is served over HTTPS — insecure ws:// connections are blocked. If your server supports TLS, use wss:// (or ngrok/host with TLS). Attempting to use wss://...';
+    }
+    url = url.replace(/^ws:\/\//i, 'wss://');
+  } else {
+    const warningEl = document.getElementById('wsWarning');
+    if (warningEl) { warningEl.style.display = 'none'; warningEl.textContent = ''; }
+  }
+
+  // Basic validation
+  if (!/^wss?:\/\//i.test(url)) throw new Error('Invalid WebSocket URL');
+  return url;
+}
+
+function wsUrl() {
+  try {
+    return validateAndNormalizeWsUrl(wsUrlRaw());
+  } catch (e) {
+    const warningEl = document.getElementById('wsWarning');
+    if (warningEl) { warningEl.style.display = 'block'; warningEl.textContent = e.message; }
+    throw e;
+  }
+}
+
 function connectWS(onOpen) {
+  let url;
+  try { url = wsUrl(); } catch (e) { return; }
+
   if (ws && ws.readyState < 2) ws.close();
-  ws = new WebSocket(wsUrl());
+  ws = new WebSocket(url);
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: "join", room: roomCode }));
@@ -320,7 +366,8 @@ function connectWS(onOpen) {
     handleMsg(msg);
   };
 
-  ws.onerror = () => {
+  ws.onerror = (ev) => {
+    console.error('WebSocket error', ev);
     setBadge(role === "starter" ? "starterBadge" : "finishBadge", "err", "Server error — check URL");
     if (role === "starter") {
       document.getElementById("wsStatusLabel").textContent = "⚠ Could not connect to server.";
@@ -334,8 +381,43 @@ function connectWS(onOpen) {
   };
 }
 
-function send(obj) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+// Quick helper: attempt a short test connection and show result, then close
+function testWsConnection() {
+  let url;
+  try { url = wsUrl(); } catch (e) { return; }
+  const statusEl = document.getElementById('wsWarning');
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#185fa5'; statusEl.textContent = 'Testing...'; }
+
+  let testWs;
+  try {
+    testWs = new WebSocket(url);
+  } catch (e) {
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Invalid URL or unsupported scheme.'; }
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    try { testWs.close(); } catch {};
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Connection timed out'; }
+  }, 4000);
+
+  testWs.onopen = () => {
+    clearTimeout(timer);
+    try { testWs.close(); } catch {}
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#1a8f3a'; statusEl.textContent = 'Connection OK'; }
+  };
+
+  testWs.onerror = (ev) => {
+    clearTimeout(timer);
+    try { testWs.close(); } catch {}
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Connection failed — check host/port and CORS/firewall'; }
+  };
+}
+
+// Prefill local IP helper (best-effort instruction, user must replace with actual IP)
+function prefillLocal() {
+  const ip = prompt('Enter your computer\'s local IP (e.g. 192.168.1.42):');
+  if (ip) document.getElementById('wsUrlInput').value = `ws://${ip}:3001`;
 }
 
 // ── Message handler ────────────────────────────────────────────────────────
