@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Race Timer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #ffffff;
+    --bg2: #f5f5f3;
+    --bg3: #efefec;
+    --text: #1a1a18;
+    --text2: #666660;
+    --text3: #999990;
+    --border: rgba(0,0,0,0.12);
+    --border2: rgba(0,0,0,0.22);
+    --radius: 12px;
+    --radius-sm: 8px;
+    --green: #1D9E75;
+    --red: #E24B4A;
+    --blue: #185FA5;
+    --amber: #BA7517;
+    --green-bg: #EAF3DE;
+    --green-text: #3B6D11;
+    --red-bg: #FCEBEB;
+    --red-text: #A32D2D;
+    --blue-bg: #E6F1FB;
+    --blue-text: #185FA5;
+    --amber-bg: #FAEEDA;
+    --amber-text: #854F0B;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1a;
+      --bg2: #252523;
+      --bg3: #2e2e2b;
+      --text: #f0f0ec;
+      --text2: #999990;
+      --text3: #666660;
+      --border: rgba(255,255,255,0.1);
+      --border2: rgba(255,255,255,0.2);
+      --green-bg: #173404;
+      --green-text: #C0DD97;
+      --red-bg: #501313;
+      --red-text: #F7C1C1;
+      --blue-bg: #042C53;
+      --blue-text: #B5D4F4;
+      --amber-bg: #412402;
+      --amber-text: #FAC775;
+    }
+  }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg3); color: var(--text); min-height: 100vh; }
+  .app { max-width: 480px; margin: 0 auto; padding: 1.25rem; }
+
+  .screen { display: none; }
+  .screen.active { display: block; }
+
+  h1 { font-size: 22px; font-weight: 500; margin-bottom: 0.3rem; }
+  h2 { font-size: 18px; font-weight: 500; margin-bottom: 0.75rem; }
+  p { font-size: 14px; color: var(--text2); line-height: 1.6; }
+
+  .card {
+    background: var(--bg);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .role-btn {
+    display: flex; align-items: center; gap: 14px;
+    width: 100%; padding: 1rem 1.25rem;
+    background: var(--bg); border: 0.5px solid var(--border2);
+    border-radius: var(--radius); cursor: pointer;
+    margin-bottom: 0.75rem; text-align: left;
+    transition: background 0.12s;
+  }
+  .role-btn:hover { background: var(--bg2); }
+  .role-icon { font-size: 26px; flex-shrink: 0; }
+  .role-label { font-size: 15px; font-weight: 500; color: var(--text); }
+  .role-sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+  .room-code {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 30px; font-weight: 500; letter-spacing: 6px;
+    text-align: center; padding: 0.6rem;
+    background: var(--bg2); border-radius: var(--radius-sm);
+    margin: 0.4rem 0; color: var(--text);
+  }
+
+  .input-row { display: flex; gap: 8px; margin-top: 0.5rem; }
+  .input-row input {
+    flex: 1; padding: 0.6rem 0.8rem; border-radius: var(--radius-sm);
+    border: 0.5px solid var(--border2); background: var(--bg2);
+    color: var(--text); font-size: 15px;
+    font-family: "SF Mono", monospace; letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  .input-row input:focus { outline: none; border-color: var(--blue); }
+
+  button { cursor: pointer; border: none; font-size: 14px; font-weight: 500; transition: opacity 0.12s, transform 0.08s; }
+  button:active { transform: scale(0.97); }
+  .btn-sm {
+    padding: 0.55rem 1rem; border-radius: var(--radius-sm);
+    background: var(--bg2); border: 0.5px solid var(--border2); color: var(--text);
+  }
+  .btn-primary {
+    width: 100%; padding: 0.85rem; border-radius: var(--radius);
+    background: var(--text); color: var(--bg); font-size: 15px;
+    margin-top: 0.5rem;
+  }
+  .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+  .btn-secondary {
+    width: 100%; padding: 0.85rem; border-radius: var(--radius);
+    background: var(--bg2); border: 0.5px solid var(--border2);
+    color: var(--text); font-size: 15px; margin-top: 0.5rem;
+  }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 500; padding: 4px 10px;
+    border-radius: var(--radius-sm); margin-bottom: 0.6rem;
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .b-wait   { background: var(--amber-bg); color: var(--amber-text); }
+  .b-ok     { background: var(--green-bg); color: var(--green-text); }
+  .b-run    { background: var(--blue-bg);  color: var(--blue-text);  }
+  .b-done   { background: var(--green-bg); color: var(--green-text); }
+  .b-err    { background: var(--red-bg);   color: var(--red-text);   }
+
+  .big-num {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 60px; font-weight: 500;
+    text-align: center; letter-spacing: -1px;
+    color: var(--text); line-height: 1.1; margin: 0.5rem 0;
+  }
+  .result-num {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 52px; font-weight: 500;
+    text-align: center; color: var(--text); padding: 0.5rem 0;
+  }
+  .section-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--text3); margin-bottom: 0.35rem;
+  }
+  .share-hint { font-size: 12px; color: var(--text2); text-align: center; margin-top: 4px; }
+
+  #video-container { position: relative; border-radius: var(--radius); overflow: hidden; background: #000; margin-bottom: 0.75rem; min-height: 180px; }
+  #camFeed { width: 100%; display: block; }
+  #motionCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0.5; pointer-events: none; }
+
+  .slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 0.6rem; }
+  .slider-row label { font-size: 13px; color: var(--text2); white-space: nowrap; }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--green); }
+  .slider-row span { font-size: 13px; font-weight: 500; min-width: 26px; text-align: right; color: var(--text); }
+
+  .motion-track { height: 8px; background: var(--bg2); border-radius: 4px; overflow: hidden; margin-bottom: 0.75rem; }
+  .motion-fill  { height: 100%; width: 0%; border-radius: 4px; background: var(--green); transition: width 0.08s, background 0.08s; }
+
+  .ws-config { font-size: 12px; color: var(--text2); }
+  .ws-config input {
+    width: 100%; padding: 0.5rem 0.7rem; border-radius: var(--radius-sm);
+    border: 0.5px solid var(--border2); background: var(--bg2);
+    color: var(--text); font-size: 13px; font-family: monospace;
+    margin-top: 4px;
+  }
+  .ws-config input:focus { outline: none; border-color: var(--blue); }
+
+  .top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HOME -->
+  <div id="screen-home" class="screen active">
+    <div style="margin-bottom: 1.2rem;">
+      <h1>🏁 Race Timer</h1>
+      <p>Two phones, one room code. Pick your role below.</p>
+    </div>
+
+    <div class="card">
+      <div class="section-label">WebSocket server</div>
+      <div class="ws-config">
+        Enter your server address (e.g. <code>ws://192.168.1.x:3001</code> or your ngrok URL):
+        <input type="text" id="wsUrlInput" placeholder="ws://localhost:3001" value="ws://localhost:3001" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-label">room code</div>
+      <div class="room-code" id="homeRoomCode">——</div>
+      <div class="input-row">
+        <input type="text" id="roomInput" placeholder="Enter code" maxlength="8" />
+        <button class="btn-sm" onclick="setRoomCode()">Set</button>
+        <button class="btn-sm" onclick="newRoomCode()">New</button>
+      </div>
+      <p class="share-hint" style="margin-top:6px;">Generate a new code or enter the starter's code.</p>
+    </div>
+
+    <button class="role-btn" onclick="chooseRole('starter')">
+      <div class="role-icon">🚦</div>
+      <div>
+        <div class="role-label">Starter phone</div>
+        <div class="role-sub">Press to start · 5-second countdown · shows live timer</div>
+      </div>
+    </button>
+
+    <button class="role-btn" onclick="chooseRole('finish')">
+      <div class="role-icon">📷</div>
+      <div>
+        <div class="role-label">Finish line phone</div>
+        <div class="role-sub">Camera detects crossing · records the time</div>
+      </div>
+    </button>
+  </div>
+
+  <!-- STARTER -->
+  <div id="screen-starter" class="screen">
+    <div class="top-row">
+      <h2>🚦 Starter</h2>
+      <button class="btn-sm" onclick="goHome()">← back</button>
+    </div>
+
+    <div class="card">
+      <div class="section-label">room code — share with finish phone</div>
+      <div class="room-code" id="starterRoomDisplay">——</div>
+      <p class="share-hint" id="wsStatusLabel">Connecting to server…</p>
+    </div>
+
+    <div class="card">
+      <span class="badge b-wait" id="starterBadge"><span class="dot"></span>Waiting for finish phone</span>
+
+      <div class="big-num" id="startCountdown" style="display:none;">5</div>
+      <div class="big-num" id="starterRunningTime" style="display:none;">0.000</div>
+
+      <div id="starterResultSection" style="display:none;">
+        <div class="section-label">final time</div>
+        <div class="result-num" id="starterFinalTime">—</div>
+      </div>
+
+      <button class="btn-primary" id="startRaceBtn" onclick="startRace()" disabled>Start race</button>
+      <button class="btn-secondary" id="starterResetBtn" onclick="resetRace()" style="display:none;">Reset</button>
+    </div>
+  </div>
+
+  <!-- FINISH -->
+  <div id="screen-finish" class="screen">
+    <div class="top-row">
+      <h2>📷 Finish line</h2>
+      <button class="btn-sm" onclick="goHome()">← back</button>
+    </div>
+
+    <div id="video-container">
+      <video id="camFeed" autoplay playsinline muted></video>
+      <canvas id="motionCanvas"></canvas>
+    </div>
+
+    <div class="slider-row">
+      <label>Sensitivity</label>
+      <input type="range" id="sensitivitySlider" min="3" max="60" value="20" step="1" oninput="updateSensitivity(this.value)" />
+      <span id="sensitivityVal">20</span>
+    </div>
+    <div class="motion-track"><div class="motion-fill" id="motionBar"></div></div>
+
+    <div class="card">
+      <span class="badge b-wait" id="finishBadge"><span class="dot"></span>Connecting…</span>
+      <p id="finishHint">Connecting to server. Make sure both phones use the same server URL and room code.</p>
+
+      <!-- user gesture button to request camera permission -->
+      <button id="enableCamBtn" class="btn-primary" style="display:none; margin-top:8px;" onclick="startCamera()">Enable camera</button>
+
+      <div id="finishResultSection" style="display:none;">
+        <div class="section-label">finish time</div>
+        <div class="result-num" id="finishFinalTime">—</div>
+      </div>
+
+      <button class="btn-secondary" id="finishResetBtn" onclick="resetRace()" style="display:none;">Reset</button>
+    </div>
+  </div>
+
+</div>
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let roomCode   = "";
+let role       = "";        // "starter" | "finish"
+let raceState  = "idle";    // idle | waiting | countdown | running | done
+let startTime  = 0;
+let sensitivity = 20;
+let triggered  = false;
+let stream     = null;
+let prevPixels = null;
+let motionIntervalId  = null;
+let starterTickId     = null;
+let countdownId       = null;
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+let ws = null;
+
+function wsUrl() {
+  return (document.getElementById("wsUrlInput")?.value || "ws://localhost:3001").trim();
+}
+
+function connectWS(onOpen) {
+  if (ws && ws.readyState < 2) ws.close();
+  ws = new WebSocket(wsUrl());
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "join", room: roomCode }));
+    if (onOpen) onOpen();
+  };
+
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    handleMsg(msg);
+  };
+
+  ws.onerror = () => {
+    setBadge(role === "starter" ? "starterBadge" : "finishBadge", "err", "Server error — check URL");
+    if (role === "starter") {
+      document.getElementById("wsStatusLabel").textContent = "⚠ Could not connect to server.";
+    }
+  };
+
+  ws.onclose = () => {
+    if (raceState !== "done") {
+      setBadge(role === "starter" ? "starterBadge" : "finishBadge", "err", "Disconnected — reload to retry");
+    }
+  };
+}
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+// ── Message handler ────────────────────────────────────────────────────────
+function handleMsg(msg) {
+  if (role === "starter") handleStarter(msg);
+  else                    handleFinish(msg);
+}
+
+function handleStarter(msg) {
+  if (msg.type === "room_info") {
+    document.getElementById("wsStatusLabel").textContent = `Connected · room ${roomCode}`;
+  }
+  if (msg.type === "peer_joined") {
+    setBadge("starterBadge", "ok", "Finish phone connected ✓");
+    document.getElementById("startRaceBtn").disabled = false;
+    raceState = "waiting";
+  }
+  if (msg.type === "peer_left" && raceState !== "done") {
+    setBadge("starterBadge", "wait", "Finish phone disconnected");
+    document.getElementById("startRaceBtn").disabled = true;
+    raceState = "idle";
+  }
+  if (msg.type === "finish_triggered") {
+    clearInterval(starterTickId);
+    raceState = "done";
+    showStarterResult(msg.time);
+  }
+}
+
+function handleFinish(msg) {
+  if (msg.type === "room_info") {
+    setBadge("finishBadge", "ok", "Connected — waiting for race");
+    document.getElementById("finishHint").textContent = "Waiting for starter to begin the race.";
+  }
+  if (msg.type === "peer_joined") {
+    setBadge("finishBadge", "ok", "Starter connected ✓");
+  }
+  if (msg.type === "race_countdown") {
+    setBadge("finishBadge", "wait", "Countdown…");
+  }
+  if (msg.type === "race_start") {
+    startTime = msg.startTime;
+    triggered = false;
+    raceState = "running";
+    setBadge("finishBadge", "run", "Running — cross the line!");
+    document.getElementById("finishHint").textContent = "Motion detection active. Cross the finish line!";
+  }
+  if (msg.type === "race_reset") {
+    raceState = "idle";
+    triggered = false;
+    document.getElementById("finishResultSection").style.display = "none";
+    document.getElementById("finishResetBtn").style.display = "none";
+    setBadge("finishBadge", "ok", "Ready — waiting for next race");
+    document.getElementById("finishHint").textContent = "Waiting for starter to begin the race.";
+  }
+}
+
+// ── Room code helpers ──────────────────────────────────────────────────────
+function generateCode() {
+  return Math.random().toString(36).substr(2, 6).toUpperCase();
+}
+
+function initHomeCode() {
+  roomCode = sessionStorage.getItem("raceRoom") || generateCode();
+  sessionStorage.setItem("raceRoom", roomCode);
+  document.getElementById("homeRoomCode").textContent = roomCode;
+  document.getElementById("roomInput").value = roomCode;
+}
+
+function setRoomCode() {
+  const v = document.getElementById("roomInput").value.trim().toUpperCase();
+  if (v.length >= 3) {
+    roomCode = v;
+    sessionStorage.setItem("raceRoom", roomCode);
+    document.getElementById("homeRoomCode").textContent = roomCode;
+  }
+}
+
+function newRoomCode() {
+  const c = generateCode();
+  roomCode = c;
+  sessionStorage.setItem("raceRoom", c);
+  document.getElementById("homeRoomCode").textContent = c;
+  document.getElementById("roomInput").value = c;
+}
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+function chooseRole(r) {
+  setRoomCode(); // apply any typed code
+  role = r;
+  showScreen("screen-" + (r === "starter" ? "starter" : "finish"));
+  if (r === "starter") initStarter();
+  else                 initFinish();
+}
+
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+function goHome() {
+  cleanup();
+  showScreen("screen-home");
+}
+
+// ── STARTER logic ──────────────────────────────────────────────────────────
+function initStarter() {
+  document.getElementById("starterRoomDisplay").textContent = roomCode;
+  document.getElementById("wsStatusLabel").textContent = "Connecting…";
+  raceState = "idle";
+  connectWS();
+}
+
+function startRace() {
+  if (raceState !== "waiting") return;
+  raceState = "countdown";
+  document.getElementById("startRaceBtn").disabled = true;
+  const cdEl = document.getElementById("startCountdown");
+  cdEl.style.display = "block";
+  setBadge("starterBadge", "run", "Countdown…");
+  send({ type: "race_countdown" });
+
+  let n = 5;
+  cdEl.textContent = n;
+  countdownId = setInterval(() => {
+    n--;
+    if (n > 0) {
+      cdEl.textContent = n;
+    } else {
+      clearInterval(countdownId);
+      cdEl.textContent = "GO!";
+      setTimeout(() => {
+        cdEl.style.display = "none";
+        document.getElementById("starterRunningTime").style.display = "block";
+        startTime = Date.now();
+        raceState = "running";
+        send({ type: "race_start", startTime });
+        setBadge("starterBadge", "run", "Race running…");
+        starterTickId = setInterval(() => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          document.getElementById("starterRunningTime").textContent = elapsed.toFixed(3);
+        }, 50);
+      }, 600);
+    }
+  }, 1000);
+}
+
+function showStarterResult(t) {
+  document.getElementById("starterRunningTime").style.display = "none";
+  document.getElementById("starterResultSection").style.display = "block";
+  document.getElementById("starterFinalTime").textContent = parseFloat(t).toFixed(3) + "s";
+  setBadge("starterBadge", "done", "Race complete! 🎉");
+  document.getElementById("starterResetBtn").style.display = "block";
+}
+
+// ── FINISH logic ───────────────────────────────────────────────────────────
+function initFinish() {
+  raceState = "idle";
+  setBadge("finishBadge", "wait", "Connecting…");
+  connectWS();
+  // Show a visible button so the user can tap to grant camera permission.
+  const btn = document.getElementById('enableCamBtn');
+  if (btn) {
+    btn.style.display = 'block';
+    btn.disabled = false;
+  }
+  document.getElementById('finishHint').textContent = 'Tap "Enable camera" to allow camera access.';
+}
+
+async function startCamera() {
+  const btn = document.getElementById('enableCamBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enabling…'; }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Enable camera'; }
+    setBadge("finishBadge", "err", "Camera not supported");
+    document.getElementById("finishHint").textContent = "This browser does not support camera access.";
+    return;
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 640 } },
+      audio: false
+    });
+
+    // hide/disable the button after success
+    if (btn) { btn.style.display = 'none'; btn.textContent = 'Enable camera'; }
+
+    const vid = document.getElementById("camFeed");
+    vid.srcObject = stream;
+    vid.onloadedmetadata = () => { vid.play(); startMotion(); };
+  } catch (e) {
+    console.error('getUserMedia error:', e);
+    if (btn) { btn.disabled = false; btn.textContent = 'Enable camera'; }
+    setBadge("finishBadge", "err", "Camera error");
+    document.getElementById("finishHint").textContent = "Camera access denied or unavailable: " + (e && e.message ? e.message : e);
+  }
+}
+
+function startMotion() {
+  const vid    = document.getElementById("camFeed");
+  const canvas = document.getElementById("motionCanvas");
+  const ctx    = canvas.getContext("2d");
+
+  motionIntervalId = setInterval(() => {
+    if (vid.readyState < 2) return;
+    const W = vid.videoWidth  || 320;
+    const H = vid.videoHeight || 240;
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+
+    ctx.drawImage(vid, 0, 0, W, H);
+    const frame = ctx.getImageData(0, 0, W, H);
+    const pixels = frame.data;
+
+    if (!prevPixels || prevPixels.length !== pixels.length) {
+      prevPixels = new Uint8ClampedArray(pixels);
+      return;
+    }
+
+    let diffCount = 0;
+    const total   = pixels.length / 4;
+    const out     = ctx.createImageData(W, H);
+
+    for (let i = 0; i < pixels.length; i += 4) {
+      const d = (Math.abs(pixels[i]   - prevPixels[i])
+               + Math.abs(pixels[i+1] - prevPixels[i+1])
+               + Math.abs(pixels[i+2] - prevPixels[i+2])) / 3;
+      if (d > 18) {
+        diffCount++;
+        out.data[i]   = 29;
+        out.data[i+1] = 158;
+        out.data[i+2] = 117;
+        out.data[i+3] = Math.min(255, d * 4);
+      } else {
+        out.data[i+3] = 0;
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+    prevPixels = new Uint8ClampedArray(pixels);
+
+    const pct = Math.min(100, (diffCount / total) * 100 * 3);
+    const bar = document.getElementById("motionBar");
+    bar.style.width      = pct.toFixed(1) + "%";
+    bar.style.background = pct > sensitivity ? "#E24B4A" : "#1D9E75";
+
+    if (raceState === "running" && !triggered && pct > sensitivity) {
+      triggered = true;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(3);
+      send({ type: "finish_triggered", time: elapsed });
+      raceState = "done";
+      setBadge("finishBadge", "done", "Finished! 🎉");
+      document.getElementById("finishResultSection").style.display = "block";
+      document.getElementById("finishFinalTime").textContent = elapsed + "s";
+      document.getElementById("finishHint").textContent = "Time recorded!";
+      document.getElementById("finishResetBtn").style.display = "block";
+    }
+  }, 100);
+}
+
+function updateSensitivity(v) {
+  sensitivity = parseInt(v, 10);
+  document.getElementById("sensitivityVal").textContent = v;
+}
+
+// ── Reset ──────────────────────────────────────────────────────────────────
+function resetRace() {
+  clearInterval(starterTickId);
+  clearInterval(countdownId);
+  raceState = "idle";
+  triggered = false;
+  send({ type: "race_reset" });
+
+  if (role === "starter") {
+    document.getElementById("startCountdown").style.display    = "none";
+    document.getElementById("starterRunningTime").style.display = "none";
+    document.getElementById("starterRunningTime").textContent   = "0.000";
+    document.getElementById("starterResultSection").style.display = "none";
+    document.getElementById("starterResetBtn").style.display   = "none";
+    document.getElementById("startRaceBtn").disabled           = false;
+    setBadge("starterBadge", "ok", "Finish phone connected ✓");
+    raceState = "waiting";
+  }
+}
+
+// ── Cleanup ────────────────────────────────────────────────────────────────
+function cleanup() {
+  clearInterval(motionIntervalId); motionIntervalId = null;
+  clearInterval(starterTickId);    starterTickId    = null;
+  clearInterval(countdownId);      countdownId      = null;
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (ws)     { ws.close(); ws = null; }
+  prevPixels = null;
+  raceState  = "idle";
+  role       = "";
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+function setBadge(id, type, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = "badge b-" + type;
+  el.innerHTML = `<span class="dot"></span>${text}`;
+}
+
+// Init
+initHomeCode();
+</script>
+</body>
+</html>
