@@ -1,13 +1,4 @@
-/**
- * Race Timer WebSocket Relay Server
- * Run: node server.js
- * Default port: 3001 (set PORT env var to override)
- *
- * Rooms are created on-the-fly by room code.
- * All messages are broadcast to every other socket in the room.
- */
-
-const { WebSocketServer } = require("ws");
+const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3001;
 const wss = new WebSocketServer({ port: PORT });
@@ -16,23 +7,38 @@ const wss = new WebSocketServer({ port: PORT });
 const rooms = new Map();
 
 function log(msg) {
-  console.log(`[${new Date().toISOString()}] ${msg}`);
+  console.log(new Date().toISOString(), msg);
 }
 
-wss.on("connection", (ws) => {
+// Optional Pusher (publish-only). Enable by setting PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET
+const PUSHER_APP_ID  = process.env.PUSHER_APP_ID;
+const PUSHER_KEY     = process.env.PUSHER_KEY;
+const PUSHER_SECRET  = process.env.PUSHER_SECRET;
+const PUSHER_CLUSTER = process.env.PUSHER_CLUSTER;
+let pusher = null;
+let usingPusher = false;
+if (PUSHER_APP_ID && PUSHER_KEY && PUSHER_SECRET) {
+  try {
+    const Pusher = require('pusher');
+    pusher = new Pusher({ appId: PUSHER_APP_ID, key: PUSHER_KEY, secret: PUSHER_SECRET, cluster: PUSHER_CLUSTER || undefined, useTLS: true });
+    usingPusher = true;
+    log('Pusher publishing enabled (publish-only).');
+  } catch (e) {
+    log('Pusher init failed or package not installed. Install with: npm install pusher');
+  }
+}
+
+const SIGNALING_TYPES = new Set(['p2p_offer', 'p2p_answer', 'p2p_candidate']);
+
+wss.on('connection', (ws) => {
   let currentRoom = null;
 
-  ws.on("message", (raw) => {
+  ws.on('message', (raw) => {
     let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch {
-      return;
-    }
+    try { msg = JSON.parse(raw); } catch (_) { return; }
 
-    // First message must be { type: "join", room: "XXXXXX" }
-    if (msg.type === "join") {
-      const code = (msg.room || "").toUpperCase().trim();
+    if (msg.type === 'join') {
+      const code = String(msg.room || '').toUpperCase().trim();
       if (!code) return;
 
       currentRoom = code;
@@ -40,53 +46,62 @@ wss.on("connection", (ws) => {
       rooms.get(code).add(ws);
 
       const count = rooms.get(code).size;
-      log(`Socket joined room ${code} (${count} in room)`);
-
-      // Tell the joiner how many are in the room
-      ws.send(JSON.stringify({ type: "room_info", room: code, count }));
-
-      // Tell everyone else someone joined
-      broadcast(code, ws, { type: "peer_joined", count });
+      log(`Joined room ${code} (${count})`);
+      ws.send(JSON.stringify({ type: 'room_info', room: code, count }));
+      broadcast(code, ws, { type: 'peer_joined', count });
       return;
     }
 
-    // All other messages: relay to everyone else in the room
     if (currentRoom && rooms.has(currentRoom)) {
       broadcast(currentRoom, ws, msg);
-    }
-  });
 
-  ws.on("close", () => {
-    if (!currentRoom) return;
-    const room = rooms.get(currentRoom);
-    if (room) {
-      room.delete(ws);
-      const count = room.size;
-      log(`Socket left room ${currentRoom} (${count} remaining)`);
-      if (count === 0) {
-        rooms.delete(currentRoom);
-        log(`Room ${currentRoom} dissolved`);
-      } else {
-        broadcast(currentRoom, ws, { type: "peer_left", count });
+      if (usingPusher && pusher && SIGNALING_TYPES.has(msg.type)) {
+        const channel = `race-${currentRoom}`;
+        try {
+          // pusher.trigger accepts a callback; use it to surface errors reliably
+          pusher.trigger(channel, 'message', msg, (err) => {
+            if (err) log(`Pusher trigger error for ${channel}: ${err}`);
+          });
+        } catch (e) {
+          log(`Pusher publish exception: ${e}`);
+        }
       }
     }
   });
 
-  ws.on("error", (err) => {
-    log(`Socket error: ${err.message}`);
+  ws.on('close', () => {
+    if (!currentRoom) return;
+    const room = rooms.get(currentRoom);
+    if (!room) return;
+    room.delete(ws);
+    const count = room.size;
+    log(`Left room ${currentRoom} (${count})`);
+    if (count === 0) rooms.delete(currentRoom);
+    else broadcast(currentRoom, ws, { type: 'peer_left', count });
   });
+
+  ws.on('error', (err) => log(`Socket error: ${err && err.message ? err.message : err}`));
 });
 
 function broadcast(room, sender, msg) {
   const members = rooms.get(room);
   if (!members) return;
-  const payload = JSON.stringify(msg);
+  let payload;
+  try { payload = JSON.stringify(msg); } catch (e) { return; }
   for (const client of members) {
-    if (client !== sender && client.readyState === 1 /* OPEN */) {
-      client.send(payload);
+    if (client !== sender && client.readyState === 1) {
+      try { client.send(payload); } catch (e) { /* ignore send errors */ }
     }
   }
 }
 
-log(`Race Timer relay server listening on ws://localhost:${PORT}`);
-log(`Set PORT env var to change port. Expose with ngrok: npx ngrok http ${PORT}`);
+log(`Server listening on ws://localhost:${PORT}`);
+
+// graceful shutdown
+function shutdown() {
+  log('Shutting down...');
+  try { wss.close(); } catch (e) {}
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

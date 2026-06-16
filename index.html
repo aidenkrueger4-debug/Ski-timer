@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <title>Race Timer</title>
+<!-- Firebase Realtime Database (compat) for browser realtime without a WebSocket server -->
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -185,14 +188,29 @@
 
     <div class="card">
       <div class="section-label">WebSocket server</div>
+      <div id="connectionStatus" style="margin-bottom:8px; padding:8px; border-radius:6px; font-size:12px; display:none;"></div>
       <div class="ws-config">
         Enter your server address (e.g. <code>ws://192.168.1.x:3001</code> or your ngrok URL):
         <input type="text" id="wsUrlInput" placeholder="ws://localhost:3001" value="ws://localhost:3001" />
         <div style="display:flex; gap:8px; margin-top:8px;">
-          <button class="btn-sm" onclick="prefillLocal()">Use local IP</button>
           <button class="btn-sm" onclick="testWsConnection()">Test connection</button>
+          <button class="btn-sm" onclick="autoDetectIp()">Auto-detect IP</button>
         </div>
+        <div style="margin-top:8px; font-size:12px; color:#444;">Or run entirely peer-to-peer (no server). Toggle below and follow role-specific instructions after selecting a role.</div>
+        <label style="display:flex; gap:8px; align-items:center; margin-top:8px;"><input type="checkbox" id="p2pToggle" /> Enable manual P2P (no server)</label>
+        <div style="margin-top:8px; font-size:12px; color:#444;">Or use Firebase Realtime Database (no WebSocket server required). Paste your firebaseConfig JSON below:</div>
+        <textarea id="firebaseConfigInput" placeholder='{"apiKey":...,"authDomain":...,"databaseURL":...,"projectId":...}' style="width:100%;height:90px;margin-top:6px;padding:6px;font-family:monospace;font-size:12px;"></textarea>
         <div id="wsWarning" style="margin-top:8px; font-size:12px; color:#a33; display:none;"></div>
+
+        <!-- Troubleshooting -->
+        <div style="margin-top:10px;">
+          <button class="btn-sm" id="troubleshootToggle" onclick="toggleTroubleshoot()">Troubleshooting: WebSocket errors</button>
+          <div id="troubleshootCard" style="display:none; margin-top:8px; font-size:13px; color:#444;">
+            <p id="troubleshootIntro">If you see "Upgrade Required" or connection errors, press the Test connection button then click "Show details" here.</p>
+            <div id="troubleshootDetails" style="margin-top:6px; font-size:13px; color:#666;"></div>
+            <div style="margin-top:8px; display:flex; gap:8px;"><button class="btn-sm" onclick="runTroubleshoot()">Show details</button><button class="btn-sm" onclick="openHelp()">Fix tips</button></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -235,6 +253,15 @@
       <div class="section-label">room code — share with finish phone</div>
       <div class="room-code" id="starterRoomDisplay">——</div>
       <p class="share-hint" id="wsStatusLabel">Connecting to server…</p>
+
+      <!-- P2P starter controls -->
+      <div id="p2pStarterControls" style="display:none; margin-top:10px;">
+        <div style="font-size:12px; color:#666; margin-bottom:6px;">Manual P2P: create an offer and paste the answer from the finish phone.</div>
+        <button class="btn-sm" onclick="p2pCreateOffer()">Create Offer</button>
+        <textarea id="p2pOfferOut" style="width:100%;height:90px;margin-top:8px;font-family:monospace;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:8px;"><input id="p2pAnswerIn" placeholder="Paste answer here" style="flex:1;padding:6px;" /><button class="btn-sm" onclick="p2pApplyAnswer()">Apply Answer</button></div>
+        <div id="p2pStarterStatus" style="margin-top:6px;font-size:12px;color:#444;"></div>
+      </div>
     </div>
 
     <div class="card">
@@ -284,6 +311,13 @@
         <div class="result-num" id="finishFinalTime">—</div>
       </div>
 
+      <div id="p2pFinishControls" style="display:none; margin-top:10px;">
+        <div style="font-size:12px; color:#666; margin-bottom:6px;">Manual P2P: paste starter offer below and click Create Answer to generate SDP to send back.</div>
+        <textarea id="p2pOfferIn" style="width:100%;height:90px;margin-top:8px;font-family:monospace;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:8px;"><button class="btn-sm" onclick="p2pCreateAnswer()">Create Answer</button><input id="p2pAnswerOut" style="flex:1;padding:6px;" placeholder="Answer SDP will appear here" /></div>
+        <div id="p2pFinishStatus" style="margin-top:6px;font-size:12px;color:#444;"></div>
+      </div>
+
       <button class="btn-secondary" id="finishResetBtn" onclick="resetRace()" style="display:none;">Reset</button>
     </div>
   </div>
@@ -303,29 +337,46 @@ let motionIntervalId  = null;
 let starterTickId     = null;
 let countdownId       = null;
 
-// ── WebSocket ──────────────────────────────────────────────────────────────
+// ── WebSocket / Firebase integration ─────────────────────────────────────────
 let ws = null;
+let firebaseApp = null;
+let firebaseDb = null;
+let firebaseRoomRef = null;
+let firebaseListener = null;
+let usingFirebase = false;
+const clientId = crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+
+// ── P2P (WebRTC) ────────────────────────────────────────────────────────────
+let peerConnection = null;
+let dataChannel = null;
+let isOfferer = false;
+let p2pEnabled = false;
 
 function wsUrlRaw() {
   return (document.getElementById("wsUrlInput")?.value || "ws://localhost:3001").trim();
 }
 
+function getFirebaseConfigRaw() {
+  return (document.getElementById('firebaseConfigInput')?.value || '').trim();
+}
+
+function parseFirebaseConfig(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { throw new Error('Invalid JSON for firebaseConfig'); }
+}
+
 function validateAndNormalizeWsUrl(raw) {
   if (!raw) throw new Error('Empty URL');
-  // allow ws:// or wss:// and also accept http(s) urls and convert
   let url = raw.trim();
-  // If user pasted an https:// or http:// URL, try to map to wss/ws
   if (url.startsWith('https://')) url = 'wss://' + url.slice(8);
   else if (url.startsWith('http://')) url = 'ws://' + url.slice(7);
 
-  // If served over https and user provided ws://, warn and attempt to upgrade to wss://
   const pageIsSecure = location.protocol === 'https:';
   if (pageIsSecure && url.startsWith('ws://')) {
-    // Warn user and try to auto-convert to wss:// — this will only work if the server supports TLS.
     const warningEl = document.getElementById('wsWarning');
     if (warningEl) {
       warningEl.style.display = 'block';
-      warningEl.textContent = 'This page is served over HTTPS — insecure ws:// connections are blocked. If your server supports TLS, use wss:// (or ngrok/host with TLS). Attempting to use wss://...';
+      warningEl.textContent = 'This page is served over HTTPS — insecure ws:// connections are blocked. Use wss:// or Firebase.';
     }
     url = url.replace(/^ws:\/\//i, 'wss://');
   } else {
@@ -333,15 +384,12 @@ function validateAndNormalizeWsUrl(raw) {
     if (warningEl) { warningEl.style.display = 'none'; warningEl.textContent = ''; }
   }
 
-  // Basic validation
   if (!/^wss?:\/\//i.test(url)) throw new Error('Invalid WebSocket URL');
   return url;
 }
 
 function wsUrl() {
-  try {
-    return validateAndNormalizeWsUrl(wsUrlRaw());
-  } catch (e) {
+  try { return validateAndNormalizeWsUrl(wsUrlRaw()); } catch (e) {
     const warningEl = document.getElementById('wsWarning');
     if (warningEl) { warningEl.style.display = 'block'; warningEl.textContent = e.message; }
     throw e;
@@ -349,6 +397,13 @@ function wsUrl() {
 }
 
 function connectWS(onOpen) {
+  const fbRaw = getFirebaseConfigRaw();
+  if (fbRaw) {
+    const cfg = parseFirebaseConfig(fbRaw);
+    connectFirebase(cfg, onOpen);
+    return;
+  }
+
   let url;
   try { url = wsUrl(); } catch (e) { return; }
 
@@ -356,68 +411,177 @@ function connectWS(onOpen) {
   ws = new WebSocket(url);
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: "join", room: roomCode }));
+    ws.send(JSON.stringify({ type: 'join', room: roomCode }));
     if (onOpen) onOpen();
   };
 
-  ws.onmessage = (e) => {
-    let msg;
-    try { msg = JSON.parse(e.data); } catch { return; }
-    handleMsg(msg);
-  };
-
-  ws.onerror = (ev) => {
-    console.error('WebSocket error', ev);
-    setBadge(role === "starter" ? "starterBadge" : "finishBadge", "err", "Server error — check URL");
-    if (role === "starter") {
-      document.getElementById("wsStatusLabel").textContent = "⚠ Could not connect to server.";
-    }
-  };
-
-  ws.onclose = () => {
-    if (raceState !== "done") {
-      setBadge(role === "starter" ? "starterBadge" : "finishBadge", "err", "Disconnected — reload to retry");
-    }
-  };
+  ws.onmessage = (e) => { let msg; try { msg = JSON.parse(e.data); } catch { return; } handleMsg(msg); };
+  ws.onerror = (ev) => { console.error('WebSocket error', ev); setBadge(role === 'starter' ? 'starterBadge' : 'finishBadge', 'err', 'Server error — check URL'); if (role === 'starter') document.getElementById('wsStatusLabel').textContent = '⚠ Could not connect to server.'; };
+  ws.onclose = () => { if (raceState !== 'done') setBadge(role === 'starter' ? 'starterBadge' : 'finishBadge', 'err', 'Disconnected — reload to retry'); };
 }
 
-// Quick helper: attempt a short test connection and show result, then close
-function testWsConnection() {
-  let url;
-  try { url = wsUrl(); } catch (e) { return; }
-  const statusEl = document.getElementById('wsWarning');
-  if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#185fa5'; statusEl.textContent = 'Testing...'; }
-
-  let testWs;
+function connectFirebase(config, onOpen) {
   try {
-    testWs = new WebSocket(url);
+    if (firebaseApp) {
+      try { firebaseApp.delete(); } catch(e) {}
+      firebaseApp = null; firebaseDb = null; firebaseRoomRef = null; firebaseListener = null;
+    }
+    firebaseApp = firebase.initializeApp(config);
+    firebaseDb = firebase.database();
+    usingFirebase = true;
+
+    const roomPath = 'race-timer/rooms/' + (roomCode || 'default');
+    firebaseRoomRef = firebaseDb.ref(roomPath + '/messages');
+
+    firebaseListener = firebaseRoomRef.limitToLast(50);
+    firebaseListener.on('child_added', (snap) => {
+      const msg = snap.val();
+      if (!msg) return;
+      if (msg.senderId && msg.senderId === clientId) return;
+      try { handleMsg(msg); } catch (e) { console.error('firebase handleMsg', e); }
+    });
+
+    firebaseRoomRef.push({ type: 'join', room: roomCode, senderId: clientId, ts: Date.now() });
+
+    if (onOpen) onOpen();
+    const statusEl = document.getElementById('wsWarning'); if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#1a8f3a'; statusEl.textContent = 'Connected via Firebase Realtime Database'; }
   } catch (e) {
-    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Invalid URL or unsupported scheme.'; }
+    console.error('Firebase connect error', e);
+    const statusEl = document.getElementById('wsWarning'); if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Firebase connection failed: ' + (e && e.message ? e.message : e); }
+  }
+}
+
+function send(obj) {
+  if (dataChannel && dataChannel.readyState === 'open') {
+    try { dataChannel.send(JSON.stringify(obj)); return; } catch (e) { console.error('p2p send failed', e); }
+  }
+  if (usingFirebase && firebaseRoomRef) {
+    try { const payload = Object.assign({}, obj, { senderId: clientId, ts: Date.now() }); firebaseRoomRef.push(payload); return; } catch (e) { console.error('firebase publish failed', e); }
+  }
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+// Test connection supports Firebase or WebSocket
+function testWsConnection() {
+  const fbRaw = getFirebaseConfigRaw();
+  const statusEl = document.getElementById('wsWarning');
+  if (fbRaw) {
+    try {
+      const cfg = parseFirebaseConfig(fbRaw);
+      const tmp = firebase.initializeApp(cfg, 'tmp-' + Date.now());
+      const tmpDb = firebase.database();
+      const testRef = tmpDb.ref('race-timer/test');
+      testRef.once('value').then(() => { try { tmp.delete(); } catch(e){} if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#1a8f3a'; statusEl.textContent='Firebase OK'; } }).catch(err => { try { tmp.delete(); } catch(e){} if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#a33'; statusEl.textContent='Firebase test failed'; } });
+    } catch (e) { if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#a33'; statusEl.textContent='Invalid Firebase config'; } }
     return;
   }
 
-  const timer = setTimeout(() => {
-    try { testWs.close(); } catch {};
-    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Connection timed out'; }
-  }, 4000);
-
-  testWs.onopen = () => {
-    clearTimeout(timer);
-    try { testWs.close(); } catch {}
-    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#1a8f3a'; statusEl.textContent = 'Connection OK'; }
-  };
-
-  testWs.onerror = (ev) => {
-    clearTimeout(timer);
-    try { testWs.close(); } catch {}
-    if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#a33'; statusEl.textContent = 'Connection failed — check host/port and CORS/firewall'; }
-  };
+  // fallback: websocket test
+  let url; try { url = wsUrl(); } catch (e) { return; }
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#185fa5'; statusEl.textContent = 'Testing...'; }
+  let testWs; try { testWs = new WebSocket(url); } catch (e) { if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#a33'; statusEl.textContent='Invalid URL or unsupported scheme.'; } return; }
+  const timer = setTimeout(() => { try { testWs.close(); } catch{} if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#a33'; statusEl.textContent='Connection timed out'; } }, 4000);
+  testWs.onopen = () => { clearTimeout(timer); try { testWs.close(); } catch{} if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#1a8f3a'; statusEl.textContent='Connection OK'; } };
+  testWs.onerror = (ev) => { clearTimeout(timer); try { testWs.close(); } catch{} if (statusEl) { statusEl.style.display='block'; statusEl.style.color='#a33'; statusEl.textContent='Connection failed — check host/port and firewall'; } };
 }
 
-// Prefill local IP helper (best-effort instruction, user must replace with actual IP)
-function prefillLocal() {
-  const ip = prompt('Enter your computer\'s local IP (e.g. 192.168.1.42):');
-  if (ip) document.getElementById('wsUrlInput').value = `ws://${ip}:3001`;
+function autoDetectIp() {
+  const hostname = window.location.hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    alert('❌ You are on LOCALHOST.\n\nYour phone CANNOT access localhost!\n\n✅ On your phone, use your COMPUTER IP:\nhttp://192.168.1.118:8080\n\n✅ Change WebSocket URL to:\nws://192.168.1.118:3001');
+  } else {
+    alert('✅ Current IP: ' + hostname + '\n\nMake sure your phone is on the SAME WiFi network and uses this address.');
+  }
+}
+
+// Troubleshooting helpers
+function toggleTroubleshoot() {
+  const el = document.getElementById('troubleshootCard');
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function openHelp() {
+  const details = `Common fixes:\n1) Serve the site over HTTP (not file://). Run: npx http-server or node server.js.\n2) Ensure your WS relay is running and listening on the configured port.\n3) If you see "Upgrade Required", the host is responding over HTTP but not accepting WebSocket upgrades (use the WS port or run the relay).\n4) Use wss:// on HTTPS pages or use Firebase/manual P2P.`;
+  document.getElementById('troubleshootDetails').textContent = details;
+}
+
+async function runTroubleshoot() {
+  const raw = wsUrlRaw();
+  const detailsEl = document.getElementById('troubleshootDetails');
+  if (!detailsEl) return;
+  detailsEl.textContent = 'Probing server...';
+  try {
+    const probe = await probeWsEndpoint(raw);
+    detailsEl.textContent = probe;
+  } catch (e) {
+    detailsEl.textContent = 'Troubleshoot failed: ' + (e && e.message ? e.message : e);
+  }
+}
+
+async function probeWsEndpoint(raw) {
+  // If page served via file://, warn
+  if (location.protocol === 'file:') return 'This page is being opened as a file (file://). Serve it via HTTP (e.g. run: npx http-server) so browsers can open WebSockets.';
+
+  let u = raw.trim();
+  try {
+    // normalize into http(s) probe URL
+    if (u.startsWith('ws://')) u = 'http://' + u.slice(5);
+    else if (u.startsWith('wss://')) u = 'https://' + u.slice(6);
+    else if (u.startsWith('http://') || u.startsWith('https://')) { /* ok */ }
+    else {
+      // assume host:port
+      u = 'http://' + u;
+    }
+    // probe root
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const resp = await fetch(u, { method: 'GET', signal: controller.signal });
+    clearTimeout(timeout);
+    if (resp.status === 426) {
+      return 'Server responded 426 Upgrade Required — the host is answering HTTP but not accepting WebSocket upgrades. Make sure you are connecting to the WebSocket relay (ws://) port, not an HTTP-only port.';
+    }
+    if (resp.ok) return `HTTP ${resp.status} ${resp.statusText} — server responding over HTTP. If you expected WebSocket, ensure the server accepts WebSocket upgrades on this endpoint.`;
+    return `HTTP ${resp.status} ${resp.statusText} — server response. If you see Upgrade Required, point to the WS relay or run the relay server.`;
+  } catch (err) {
+    // fetch failed — likely no HTTP server; try raw WebSocket check
+    try {
+      await new Promise((res, rej) => {
+        const wsProbe = new WebSocket(raw);
+        const t = setTimeout(() => { try{ wsProbe.close(); }catch{} rej(new Error('WebSocket probe timed out')); }, 3000);
+        wsProbe.onopen = () => { clearTimeout(t); wsProbe.close(); res(); };
+        wsProbe.onerror = () => { clearTimeout(t); try{ wsProbe.close(); }catch{} rej(new Error('WebSocket probe failed')); };
+      });
+      return 'WebSocket probe succeeded';
+    } catch (e) {
+      return 'No HTTP server detected and WebSocket probe failed — ensure your relay is running and reachable, or use Firebase/manual P2P.';
+    }
+  }
+}
+
+// Hook ws.onerror to run probe and show guidance
+(function patchWsOnError() {
+  const origConnect = connectWS;
+  connectWS = function(onOpen) {
+    // call original
+    origConnect(onOpen);
+    // attach a probe on ws.onerror
+    try {
+      if (ws) {
+        const prevErr = ws.onerror;
+        ws.onerror = function(ev) {
+          try { runTroubleshoot(); } catch(e){}
+          if (prevErr) try { prevErr(ev); } catch(e){}
+        };
+      }
+    } catch(e){}
+  };
+})();
+
+// show immediate warning if page is opened as file://
+if (location.protocol === 'file:') {
+  const sw = document.getElementById('wsWarning');
+  if (sw) { sw.style.display = 'block'; sw.style.color = '#a33'; sw.textContent = 'Serving file:// — run a local server (npx http-server or node server.js) so WebSockets will work.'; }
 }
 
 // ── Message handler ────────────────────────────────────────────────────────
@@ -444,6 +608,17 @@ function handleStarter(msg) {
     clearInterval(starterTickId);
     raceState = "done";
     showStarterResult(msg.time);
+  }
+
+  // P2P message handling
+  if (msg.type === "p2p_offer") {
+    handleP2POffer(msg);
+  }
+  if (msg.type === "p2p_answer") {
+    handleP2PAnswer(msg);
+  }
+  if (msg.type === "p2p_candidate") {
+    handleP2PCandidate(msg);
   }
 }
 
@@ -472,6 +647,17 @@ function handleFinish(msg) {
     document.getElementById("finishResetBtn").style.display = "none";
     setBadge("finishBadge", "ok", "Ready — waiting for next race");
     document.getElementById("finishHint").textContent = "Waiting for starter to begin the race.";
+  }
+
+  // P2P message handling
+  if (msg.type === "p2p_offer") {
+    handleP2POffer(msg);
+  }
+  if (msg.type === "p2p_answer") {
+    handleP2PAnswer(msg);
+  }
+  if (msg.type === "p2p_candidate") {
+    handleP2PCandidate(msg);
   }
 }
 
@@ -529,6 +715,13 @@ function initStarter() {
   document.getElementById("wsStatusLabel").textContent = "Connecting…";
   raceState = "idle";
   connectWS();
+
+  // if p2p toggle enabled, start auto offer
+  try {
+    if (isP2PEnabled()) startAutoP2PForStarter();
+    // show starter UI for p2p
+    document.getElementById('p2pStarterControls').style.display = isP2PEnabled() ? 'block' : 'none';
+  } catch(e){}
 }
 
 function startRace() {
@@ -578,6 +771,7 @@ function initFinish() {
   raceState = "idle";
   setBadge("finishBadge", "wait", "Connecting…");
   connectWS();
+
   // Show a visible button so the user can tap to grant camera permission.
   const btn = document.getElementById('enableCamBtn');
   if (btn) {
@@ -585,6 +779,14 @@ function initFinish() {
     btn.disabled = false;
   }
   document.getElementById('finishHint').textContent = 'Tap "Enable camera" to allow camera access.';
+
+  // show/hide manual P2P UI
+  document.getElementById('p2pFinishControls').style.display = isP2PEnabled() ? 'block' : 'none';
+
+  // auto wait for offer if P2P enabled
+  try {
+    if (isP2PEnabled()) startAutoP2PForFinish();
+  } catch(e){}
 }
 
 async function startCamera() {
@@ -706,13 +908,21 @@ function resetRace() {
 // ── Cleanup ────────────────────────────────────────────────────────────────
 function cleanup() {
   clearInterval(motionIntervalId); motionIntervalId = null;
-  clearInterval(starterTickId);    starterTickId    = null;
-  clearInterval(countdownId);      countdownId      = null;
+  clearInterval(starterTickId); starterTickId = null;
+  clearInterval(countdownId); countdownId = null;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-  if (ws)     { ws.close(); ws = null; }
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  if (firebaseListener && firebaseRoomRef) { try { firebaseRoomRef.off('child_added', firebaseListener); } catch(e){} firebaseListener = null; }
+  if (firebaseApp) { try { firebaseApp.delete(); } catch(e){} firebaseApp = null; firebaseDb = null; firebaseRoomRef = null; usingFirebase = false; }
   prevPixels = null;
-  raceState  = "idle";
-  role       = "";
+  raceState = 'idle';
+  role = '';
+
+  // close P2P connection if active
+  if (peerConnection) {
+    peerConnection.close();
+    peerConnection = null;
+  }
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────
@@ -723,8 +933,209 @@ function setBadge(id, type, text) {
   el.innerHTML = `<span class="dot"></span>${text}`;
 }
 
+// ── P2P (WebRTC) ────────────────────────────────────────────────────────────
+function isP2PEnabled() {
+  try { return document.getElementById('p2pToggle')?.checked === true; } catch (e) { return false; }
+}
+
+function waitForIceGatheringComplete(pc, timeout = 3000) {
+  return new Promise((resolve) => {
+    if (!pc) return resolve();
+    if (pc.iceGatheringState === 'complete') return resolve();
+    function check() { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', check); resolve(); } }
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(() => { try { pc.removeEventListener('icegatheringstatechange', check); } catch(e){} resolve(); }, timeout);
+  });
+}
+
+function startAutoP2PForStarter() {
+  p2pEnabled = true;
+  isOfferer = true;
+  setP2PStatus('Creating P2P offer…');
+  if (!peerConnection) createPeerConnection();
+  try {
+    // create a datachannel for the offerer
+    dataChannel = peerConnection.createDataChannel('race');
+    setupDataChannel(dataChannel);
+  } catch (e) { console.warn('createDataChannel failed', e); }
+
+  peerConnection.createOffer().then(async (offer) => {
+    await peerConnection.setLocalDescription(offer);
+    // wait for ICE to be gathered so the SDP contains candidates
+    await waitForIceGatheringComplete(peerConnection, 4000);
+    const localDesc = peerConnection.localDescription || offer;
+    send({ type: 'p2p_offer', offer: localDesc });
+    setP2PStatus('Offer sent to peer — waiting for answer');
+  }).catch((err) => {
+    console.error('Offer error', err);
+    setP2PStatus('Error creating offer.');
+  });
+}
+
+function startAutoP2PForFinish() {
+  p2pEnabled = true;
+  isOfferer = false;
+  setP2PStatus('Waiting for offer from starter…');
+  if (!peerConnection) createPeerConnection();
+}
+
+function p2pCreateOffer() {
+  // manual fallback kept for copy/paste UI
+  isOfferer = true;
+  if (!peerConnection) createPeerConnection();
+  peerConnection.createOffer().then(offer => {
+    peerConnection.setLocalDescription(offer);
+    document.getElementById('p2pOfferOut').value = JSON.stringify(offer);
+    setP2PStatus('Offer created. Send this to the finish phone.');
+  }).catch(err => {
+    console.error('Offer error', err);
+    setP2PStatus('Error creating offer.');
+  });
+}
+
+function p2pApplyAnswer() {
+  const answerText = document.getElementById('p2pAnswerIn').value.trim();
+  if (!answerText) return;
+  try {
+    const answer = JSON.parse(answerText);
+    if (!peerConnection) createPeerConnection();
+    peerConnection.setRemoteDescription(new RTCSessionDescription(answer)).then(() => {
+      setP2PStatus('Answer applied. Connection should be established.');
+    }).catch(err => {
+      console.error('Set remote description error', err);
+      setP2PStatus('Error applying answer.');
+    });
+  } catch (e) {
+    console.error('Invalid answer JSON', e);
+    setP2PStatus('Invalid answer format.');
+  }
+}
+
+async function p2pCreateAnswer() {
+  // manual fallback kept for copy/paste UI
+  const offerText = document.getElementById('p2pOfferIn').value.trim();
+  if (!offerText) return alert('Paste the starter offer here');
+  if (!peerConnection) createPeerConnection();
+  try {
+    const offer = JSON.parse(offerText);
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    await waitForIceGatheringComplete(peerConnection, 4000);
+    document.getElementById('p2pAnswerOut').value = JSON.stringify(peerConnection.localDescription);
+    document.getElementById('p2pFinishStatus').textContent = 'Answer created — paste back to starter.';
+  } catch (e) { console.error('Failed to create answer', e); alert('Failed to create answer'); }
+}
+
+function handleP2POffer(msg) {
+  // msg.offer is either an RTCSessionDescription-like obj
+  if (isOfferer) return; // ignore if we are the offerer
+  if (!peerConnection) createPeerConnection();
+  peerConnection.setRemoteDescription(new RTCSessionDescription(msg.offer)).then(async () => {
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    await waitForIceGatheringComplete(peerConnection, 4000);
+    const localDesc = peerConnection.localDescription || answer;
+    send({ type: 'p2p_answer', answer: localDesc });
+    setP2PStatus('Answer sent to starter.');
+  }).catch(err => {
+    console.error('Set remote description error', err);
+    setP2PStatus('Error handling offer.');
+  });
+}
+
+function handleP2PAnswer(msg) {
+  if (isAnswerer) return; // ignore if we are the answerer
+  if (!peerConnection) return;
+  peerConnection.setRemoteDescription(new RTCSessionDescription(msg.answer)).then(() => {
+    setP2PStatus('Answer received. Connection established.');
+  }).catch(err => {
+    console.error('Set remote description error', err);
+    setP2PStatus('Error handling answer.');
+  });
+}
+
+function handleP2PCandidate(msg) {
+  if (msg.candidate && peerConnection) {
+    peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(e => console.error('Error adding ICE candidate', e));
+  }
+}
+
+function createPeerConnection() {
+  try {
+    peerConnection = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+      ]
+    });
+
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        send({ type: 'p2p_candidate', candidate: event.candidate });
+      }
+    };
+
+    peerConnection.onconnectionstatechange = () => {
+      const s = peerConnection.connectionState || peerConnection.iceConnectionState;
+      if (s === 'connected') setP2PStatus('P2P connected.');
+      if (s === 'disconnected' || s === 'failed') setP2PStatus('P2P disconnected.');
+    };
+
+    peerConnection.ondatachannel = (event) => {
+      dataChannel = event.channel;
+      setupDataChannel(dataChannel);
+    };
+
+    // if we already had a data channel created (offerer path), wire it up
+    if (dataChannel && dataChannel.readyState !== 'closed') setupDataChannel(dataChannel);
+
+    setP2PStatus('P2P ready.');
+    return peerConnection;
+  } catch (e) {
+    console.error('PeerConnection error', e);
+    setP2PStatus('Error creating P2P connection.');
+  }
+}
+
+function setupDataChannel(channel) {
+  if (!channel) return;
+  channel.onopen = () => {
+    setP2PStatus('Data channel open.');
+  };
+  channel.onclose = () => {
+    setP2PStatus('Data channel closed.');
+    // don't immediately fully cleanup here to allow user to reset; still close pc
+    try { if (peerConnection) peerConnection.close(); } catch(e){}
+    peerConnection = null; dataChannel = null;
+  };
+  channel.onmessage = (event) => {
+    try { const msg = JSON.parse(event.data); handleMsg(msg); } catch (e) { console.error('Invalid p2p message', e); }
+  };
+}
+
+function setP2PStatus(text) {
+  const el1 = document.getElementById('p2pStarterStatus');
+  const el2 = document.getElementById('p2pFinishStatus');
+  if (el1) el1.textContent = text;
+  if (el2) el2.textContent = text;
+}
+
 // Init
 initHomeCode();
+
+// Enhance: auto-toggle UI based on p2p checkbox changes
+document.addEventListener('DOMContentLoaded', () => {
+  const cb = document.getElementById('p2pToggle');
+  if (!cb) return;
+  cb.addEventListener('change', () => {
+    // show/hide manual P2P textareas on home screen only
+    document.getElementById('p2pStarterControls').style.display = cb.checked ? 'block' : 'none';
+    document.getElementById('p2pFinishControls').style.display = cb.checked ? 'block' : 'none';
+  });
+});
 </script>
 </body>
 </html>
